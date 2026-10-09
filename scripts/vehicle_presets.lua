@@ -6,8 +6,13 @@
 --   scripts\vehicle_presets\*.json -> %appdata%\YimMenuV2\scripts\vehicle_presets\
 --
 -- YimMenuV2 descarga el script ante cualquier error de Lua, asi que todo lo que puede
--- fallar va dentro de pcall. Las funciones que esperan varios frames (Vehicle.create,
--- script.yield) se llaman fuera de pcall, directamente en el callback del boton.
+-- fallar va dentro de pcall. script.yield y las funciones "latentes" de YimMenu
+-- (Vehicle.create, request_control) se llaman fuera de pcall, en el callback del boton.
+--
+-- Importante: en YimMenuV2 una funcion latente que espera MAS DE UN frame corrompe la pila
+-- de Lua (el menu deja de dibujarse y el juego puede cerrarse). Por eso el modelo se carga
+-- aqui con script.yield antes de Vehicle.create, y el control de red se pide con
+-- request_control(0) (un solo intento, sin esperas) repetido en un bucle propio.
 
 local TITLE = "Vehicle Presets"
 
@@ -188,23 +193,60 @@ end
 
 ---------------------------------------------------------------- acciones (botones)
 
-local function action_spawn()
-    local ok, pos, heading = try(function()
+-- Evita que dos pulsaciones seguidas lancen dos spawns/aplicaciones a la vez
+local busy = false
+
+-- Espera a que el modelo este cargado usando script.yield (fuera de pcall)
+local function stream_model(m)
+    for _ = 1, 100 do -- ~5 s
+        if STREAMING.HAS_MODEL_LOADED(m) then return true end
+        STREAMING.REQUEST_MODEL(m)
+        script.yield(50)
+    end
+    return STREAMING.HAS_MODEL_LOADED(m)
+end
+
+-- Pide control de red con intentos sueltos (request_control(0) nunca espera frames)
+local function take_control(veh)
+    for _ = 1, 60 do -- ~3 s
+        if veh:has_control() then return true end
+        veh:request_control(0)
+        script.yield(50)
+    end
+    return veh:has_control()
+end
+
+local function do_spawn()
+    local ok, m = try(function()
         local m = valid_model(cfg.model) and model_arg(cfg.model)
         if not m or not STREAMING.IS_MODEL_IN_CDIMAGE(m) or not STREAMING.IS_MODEL_A_VEHICLE(m) then
             notify_error("Modelo invalido: " .. tostring(cfg.model))
             return nil
         end
-        local ped = PLAYER.PLAYER_PED_ID()
-        -- 6 m delante del jugador para no aparecer dentro de otro vehiculo
-        return ENTITY.GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(ped, 0.0, 6.0, 0.0), ENTITY.GET_ENTITY_HEADING(ped)
+        return m
     end)
-    if not ok or not pos then return end
+    if not ok or not m then return end
 
-    -- Vehicle.create carga el modelo y crea un vehiculo de red (espera frames: fuera de pcall)
-    local veh = Vehicle.create(model_arg(cfg.model), pos, heading)
+    local name = cfg.model
+    if not stream_model(m) then
+        notify_error("El modelo tardo demasiado en cargar: " .. name)
+        return
+    end
+
+    local ok2, pos, heading = try(function()
+        local ped = PLAYER.PLAYER_PED_ID()
+        -- Delante del jugador, a la distancia del largo del vehiculo (como el spawner de YimMenu)
+        local mn, mx = Vector3.new(), Vector3.new()
+        MISC.GET_MODEL_DIMENSIONS(m, mn, mx)
+        local dist = math.max(6.0, (mx.y - mn.y) + 2.0)
+        return ENTITY.GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(ped, 0.0, dist, 0.0), ENTITY.GET_ENTITY_HEADING(ped)
+    end)
+    if not ok2 or not pos then return end
+
+    -- El modelo ya esta cargado, asi que Vehicle.create no espera frames
+    local veh = Vehicle.create(m, pos, heading)
     if not veh or not veh:is_valid() then
-        notify_error("No se pudo crear el vehiculo: " .. cfg.model)
+        notify_error("No se pudo crear el vehiculo: " .. name)
         return
     end
 
@@ -213,20 +255,35 @@ local function action_spawn()
         apply_mods(handle)
         PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), handle, -1)
     end) then
-        notify_ok("Spawneado: " .. cfg.model)
+        notify_ok("Spawneado: " .. name)
     end
 end
 
-local function action_apply()
-    local handle = 0
-    if not try(function() handle = current_vehicle() end) then return end
+local function do_apply()
+    local ok, handle = try(current_vehicle)
+    if not ok then return end
     if handle == 0 then notify_error("No estas en un vehiculo") return end
 
-    -- Pedir control de red si el vehiculo no es nuestro (espera frames: fuera de pcall)
-    local veh = Vehicle.new(handle)
-    if not veh:has_control() then veh:request_control() end
+    if not take_control(Vehicle.new(handle)) then
+        notify_error("No se pudo obtener el control del vehiculo (puede ser de otro jugador)")
+        return
+    end
 
     if try(apply_mods, handle) then notify_ok("Mods aplicados") end
+end
+
+local function action_spawn()
+    if busy then notify_error("Espera a que termine la accion anterior") return end
+    busy = true
+    do_spawn()
+    busy = false
+end
+
+local function action_apply()
+    if busy then notify_error("Espera a que termine la accion anterior") return end
+    busy = true
+    do_apply()
+    busy = false
 end
 
 local function action_capture()
@@ -264,6 +321,11 @@ end
 
 ---------------------------------------------------------------- interfaz
 
+-- Los ids de comando son globales en YimMenuV2; un sufijo por carga evita
+-- "command already exists" si la instancia anterior aun no se ha destruido al recargar
+local UID = "_" .. tostring(util.time())
+local function cmd(name) return "vehpresets_" .. name .. UID end
+
 local sub = menu.get_submenu(TITLE)
 local cat = sub:add_category("Presets")
 
@@ -277,9 +339,9 @@ config_group:imgui(function()
 end)
 
 local actions = cat:add_group("Acciones")
-actions:add_button("vehpresets_spawn", "Spawnear", "Spawnea el vehiculo con esta configuracion", action_spawn)
-actions:add_button("vehpresets_apply", "Aplicar al vehiculo actual", "Aplica pintura, rines y mejoras al vehiculo en el que estas", action_apply)
-actions:add_button("vehpresets_capture", "Leer vehiculo actual", "Copia la configuracion del vehiculo en el que estas", action_capture)
+actions:add_button(cmd("spawn"), "Spawnear", "Spawnea el vehiculo con esta configuracion", action_spawn)
+actions:add_button(cmd("apply"), "Aplicar al vehiculo actual", "Aplica pintura, rines y mejoras al vehiculo en el que estas", action_apply)
+actions:add_button(cmd("capture"), "Leer vehiculo actual", "Copia la configuracion del vehiculo en el que estas", action_capture)
 
 local files = cat:add_group("Presets (.json)")
 files:imgui(function()
@@ -289,6 +351,6 @@ files:imgui(function()
         if ImGui.Selectable(name, name == preset_name) then preset_name = name end
     end
 end)
-files:add_button("vehpresets_save", "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
-files:add_button("vehpresets_load", "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
-files:add_button("vehpresets_refresh", "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
+files:add_button(cmd("save"), "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
+files:add_button(cmd("load"), "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
+files:add_button(cmd("refresh"), "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
