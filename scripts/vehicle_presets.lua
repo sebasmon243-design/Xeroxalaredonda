@@ -117,11 +117,13 @@ end
 
 -- Lee un JSON plano: "clave": "texto"  o  "clave": numero
 local function load_preset(name)
-    if not FileMgr.DoesFileExist(preset_path(name)) then return false end
+    if not FileMgr.DoesFileExist(preset_path(name)) then return false, "No existe: " .. name .. ".json" end
     local text = FileMgr.ReadFileContent(preset_path(name)) or ""
 
+    -- Sin un modelo valido el preset no sirve: no se toca cfg
     local model = text:match('"model"%s*:%s*"([^"]*)"')
-    if model and valid_model(model) then cfg.model = model:lower() end
+    if not model or not valid_model(model) then return false, "Modelo invalido en " .. name .. ".json" end
+    cfg.model = model:lower()
     for k, v in text:gmatch('"([%w_]+)"%s*:%s*(%-?%d+)') do
         if k ~= "model" and cfg[k] ~= nil then cfg[k] = math.floor(tonumber(v)) end
     end
@@ -222,9 +224,15 @@ local function action_apply()
     if not try(function() handle = current_vehicle() end) then return end
     if handle == 0 then notify_error("No estas en un vehiculo") return end
 
-    -- Pedir control de red si el vehiculo no es nuestro (espera frames: fuera de pcall)
+    -- Pedir control de red si el vehiculo no es nuestro (espera frames: fuera de pcall).
+    -- request_control no devuelve nada, asi que se vuelve a comprobar despues.
     local veh = Vehicle.new(handle)
-    if not veh:has_control() then veh:request_control() end
+    local _, has = try(function() return veh:has_control() end)
+    if not has then
+        veh:request_control()
+        _, has = try(function() return veh:has_control() end)
+        if not has then notify_error("No se pudo tomar el control del vehiculo") return end
+    end
 
     if try(apply_mods, handle) then notify_ok("Mods aplicados") end
 end
@@ -254,10 +262,11 @@ end
 local function action_load()
     try(function()
         if not valid_name(preset_name) then notify_error("Escribe o elige el nombre de un preset") return end
-        if load_preset(preset_name) then
+        local loaded, err = load_preset(preset_name)
+        if loaded then
             notify_ok("Cargado: " .. preset_name .. ".json")
         else
-            notify_error("No existe: " .. preset_name .. ".json")
+            notify_error(err)
         end
     end)
 end

@@ -32,6 +32,9 @@ presets van en `scripts\vehicle_presets\`. Si la carpeta no existe, el script la
 Botones: Spawnear, Aplicar al vehiculo actual, Leer vehiculo actual, Guardar preset, Cargar preset,
 Actualizar lista. Todos los valores se pueden editar en el menu antes de spawnear o guardar.
 
+**Aplicar al vehiculo actual** primero pide el control de red del vehiculo; si no lo consigue (por ejemplo,
+el vehiculo es de otro jugador en GTA Online), avisa con un error y no cambia nada.
+
 ## Formato del preset
 
 ```json
@@ -45,7 +48,7 @@ Actualizar lista. Todos los valores se pueden editar en el menu antes de spawnea
 }
 ```
 
-- `model`: nombre del modelo (o su hash numerico).
+- `model`: nombre del modelo (o su hash numerico). Es obligatorio: si falta o no es valido, el preset no se carga.
 - `r g b` / `r2 g2 b2`: pintura primaria / secundaria (0-255).
 - `wheel_type`: 0 Sport, 1 Muscle, 2 Lowrider, 3 SUV, 4 Offroad, 5 Tuner, 7 High End...
 - `wheel_index`, `engine`, `brakes`, `transmission`, `suspension`, `armor`: nivel de mod; `-1` = de serie.
