@@ -6,6 +6,9 @@
 --   scripts\vehicle_presets\*.json -> %appdata%\YimMenuV2\scripts\vehicle_presets\
 --   scripts\vehicle_presets\garaje\ -> %appdata%\YimMenuV2\scripts\vehicle_presets\garaje\ (vehiculos del modpack)
 --
+-- La prueba del garaje (Garaje > Prueba automatica) escribe en scripts\vehicle_presets\:
+--   prueba_garaje.txt (resultado de cada vehiculo), resumen_prueba.txt y garaje_ok\ (los que funcionan).
+--
 -- YimMenuV2 descarga el script ante cualquier error de Lua, asi que todo lo que puede
 -- fallar va dentro de pcall. Las funciones que esperan varios frames (Vehicle.create,
 -- script.yield) se llaman fuera de pcall, directamente en el callback del boton.
@@ -189,6 +192,35 @@ local function capture(veh)
     cfg.turbo = VEHICLE.IS_TOGGLE_MOD_ON(veh, TOGGLE_TURBO) and 1 or 0
 end
 
+-- Pide el modelo hasta que carga o pasan `timeout_ms` (espera frames: fuera de pcall).
+-- Vehicle.create solo espera ~30 frames, poco para un modelo pesado con el disco ocupado.
+local function load_model(model, timeout_ms)
+    local waited = 0
+    while true do
+        local ok, loaded = pcall(function()
+            if STREAMING.HAS_MODEL_LOADED(model) then return true end
+            STREAMING.REQUEST_MODEL(model)
+            return false
+        end)
+        if not ok then return false end
+        if loaded then return true end
+        if waited >= timeout_ms then return false end
+        script.yield(50)
+        waited = waited + 50
+    end
+end
+
+-- Carga el modelo, crea el vehiculo en `pos` y le aplica `apply_fn(handle)` (espera frames: fuera de pcall).
+-- Devuelve el Vehicle (nil si no se creo) y, si algo fallo, el tipo de fallo y su detalle.
+local function create_vehicle(model, pos, heading, apply_fn)
+    if not load_model(model, 10000) then return nil, "NO_CARGA", "el modelo no cargo en 10 s" end
+    local veh = Vehicle.create(model, pos, heading)
+    if not veh or not veh:is_valid() then return nil, "NO_SPAWN", "el juego no creo el vehiculo" end
+    local ok, err = pcall(apply_fn, veh:get_handle())
+    if not ok then return veh, "PARCIAL", "error al aplicar mejoras: " .. tostring(err) end
+    return veh
+end
+
 ---------------------------------------------------------------- acciones (botones)
 
 -- Spawnea `model` delante del jugador, le aplica `apply_fn(handle)` y lo mete dentro.
@@ -205,18 +237,17 @@ local function spawn_with(model, label, apply_fn)
     end)
     if not ok or not pos then return end
 
-    -- Vehicle.create carga el modelo y crea un vehiculo de red (espera frames: fuera de pcall)
-    local veh = Vehicle.create(model, pos, heading)
-    if not veh or not veh:is_valid() then
-        notify_error("No se pudo crear el vehiculo: " .. tostring(label))
+    local veh, _, detail = create_vehicle(model, pos, heading, apply_fn)
+    if not veh then
+        notify_error("No se pudo crear el vehiculo: " .. tostring(label) .. " (" .. detail .. ")")
         return
     end
+    if detail then
+        pcall(log.warn, TITLE .. ": " .. detail)
+        notify_error(detail)
+    end
 
-    if try(function()
-        local handle = veh:get_handle()
-        apply_fn(handle)
-        PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), handle, -1)
-    end) then
+    if try(function() PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), veh:get_handle(), -1) end) and not detail then
         notify_ok("Spawneado: " .. tostring(label))
     end
 end
@@ -488,6 +519,252 @@ local function action_garage_spawn()
     spawn_with(int(j.vehicle_model_hash), entry.name, function(handle) apply_saved(handle, j) end)
 end
 
+---------------------------------------------------------------- prueba del garaje
+-- Crea cada vehiculo del garaje como "Spawnear del garaje" (pero 40 m delante, congelado y sin
+-- colision), comprueba que existe y que tiene sus mejoras, y lo borra. Solo en modo historia.
+-- Cada resultado se anade al momento a prueba_garaje.txt: si el juego se cierra a mitad, la prueba
+-- sigue donde iba, y un vehiculo con el que el juego se cierra dos veces queda como CRASH.
+-- Mientras exista probar_garaje.flag la prueba se lanza (o se retoma) sola al cargar el script.
+
+local TEST_LOG = PRESET_DIR .. "/prueba_garaje.txt"
+local TEST_FLAG = PRESET_DIR .. "/probar_garaje.flag"
+local TEST_SUMMARY = PRESET_DIR .. "/resumen_prueba.txt"
+local TEST_OK_DIR = PRESET_DIR .. "/garaje_ok"
+local TEST_FAILS = { ROTO = true, NO_EXISTE = true, NO_CARGA = true, NO_SPAWN = true, CRASH = true }
+local TEST_HELP = {
+    "OK        = spawnea con todas sus mejoras",
+    "PARCIAL   = spawnea, pero alguna mejora no se aplica en ese modelo",
+    "NO_EXISTE = el modelo no esta en tu juego",
+    "NO_CARGA  = el modelo no cargo en 10 s",
+    "NO_SPAWN  = el juego no creo el vehiculo",
+    "CRASH     = el juego se cerro dos veces probando este vehiculo",
+    "ROTO      = el .json no se puede leer",
+}
+local test = { requested = false, running = false, stop = false, status = "Sin empezar" }
+
+-- Linea "ESTADO|carpeta/nombre|detalle"
+local function test_write(state, rel, detail)
+    local line = state .. "|" .. rel .. "|" .. tostring(detail or ""):gsub("[\r\n|]", " ") .. "\n"
+    pcall(FileMgr.WriteFileContent, TEST_LOG, line, true)
+end
+
+-- Resultado de cada vehiculo ya probado y cuantas veces se empezo a probar
+local function test_read_log()
+    local done, tries = {}, {}
+    local ok, text = pcall(function()
+        return FileMgr.DoesFileExist(TEST_LOG) and FileMgr.ReadFileContent(TEST_LOG) or ""
+    end)
+    for line in (ok and text or ""):gmatch("[^\r\n]+") do
+        local state, rel, detail = line:match("^([%u_]+)|([^|]*)|(.*)$")
+        if state == "PROBANDO" then
+            tries[rel] = (tries[rel] or 0) + 1
+        elseif state then
+            done[rel] = { state = state, detail = detail }
+        end
+    end
+    return done, tries
+end
+
+local function test_can_run()
+    local ok, online = pcall(network.is_session_started)
+    if not ok or online then return false, "En linea: la prueba espera a que estes en modo historia" end
+    local ok2, ready = pcall(function()
+        local ped = PLAYER.PLAYER_PED_ID()
+        return PLAYER.IS_PLAYER_PLAYING(PLAYER.PLAYER_ID()) and ENTITY.DOES_ENTITY_EXIST(ped)
+            and not PED.IS_PED_DEAD_OR_DYING(ped, true) and not DLC.GET_IS_LOADING_SCREEN_ACTIVE()
+            and not STREAMING.IS_PLAYER_SWITCH_IN_PROGRESS()
+    end)
+    if not ok2 or not ready then return false, "Esperando a que el jugador este listo" end
+    return true
+end
+
+-- Espera al modo historia con el jugador listo (espera frames). false si se pidio parar.
+local function test_wait_ready()
+    while not test.stop do
+        local ok, why = test_can_run()
+        if ok then return true end
+        test.status = why
+        script.yield(2000)
+    end
+    return false
+end
+
+-- Todos los .json del garaje, ordenados por modelo para cargar cada modelo una sola vez (espera frames)
+local function test_collect()
+    local entries = {}
+    local ok, paths = try(FileMgr.FindFiles, GARAGE_DIR, ".json", true)
+    if not ok then return entries end
+    for i, path in ipairs(paths) do
+        local rel = path:gsub("\\", "/"):match("vehicle_presets/garaje/(.+)%.json$")
+        if rel then
+            local e = { rel = rel, path = path }
+            local okj, j = pcall(function() return json_decode(FileMgr.ReadFileContent(path)) end)
+            if okj and type(j) == "table" and int(j.vehicle_model_hash) then
+                e.j, e.model = j, int(j.vehicle_model_hash)
+            else
+                e.err = okj and "falta vehicle_model_hash" or tostring(j)
+            end
+            entries[#entries + 1] = e
+        end
+        if i % 50 == 0 then script.yield() end
+    end
+    table.sort(entries, function(a, b)
+        if (a.model or -1) ~= (b.model or -1) then return (a.model or -1) < (b.model or -1) end
+        return a.rel < b.rel
+    end)
+    return entries
+end
+
+-- Mejoras del .json que el vehiculo no tiene despues de aplicarlas
+local function test_missing_mods(veh, j)
+    local out = {}
+    for slot = 0, #MOD_NAMES do
+        local v = MOD_NAMES[slot] ~= "" and j[MOD_NAMES[slot]] or nil
+        if type(v) == "table" and int(v[1]) and int(v[1]) >= 0 then
+            if VEHICLE.GET_VEHICLE_MOD(veh, slot) ~= int(v[1]) then
+                out[#out + 1] = string.format("%s=%d (max %d)", MOD_NAMES[slot], int(v[1]), VEHICLE.GET_NUM_VEHICLE_MODS(veh, slot) - 1)
+            end
+        elseif v == "TOGGLE" and not VEHICLE.IS_TOGGLE_MOD_ON(veh, slot) then
+            out[#out + 1] = MOD_NAMES[slot]
+        end
+    end
+    return out
+end
+
+-- Prueba un vehiculo y devuelve su estado y detalle (espera frames: fuera de pcall)
+local function test_one(e)
+    if not e.j then return "ROTO", e.err end
+    local ok, pos = pcall(function()
+        if not STREAMING.IS_MODEL_IN_CDIMAGE(e.model) or not STREAMING.IS_MODEL_A_VEHICLE(e.model) then return nil end
+        -- 40 m delante: lejos del jugador incluso con los aviones grandes
+        return ENTITY.GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(PLAYER.PLAYER_PED_ID(), 0.0, 40.0, 0.0)
+    end)
+    if not ok then return "NO_SPAWN", tostring(pos) end
+    if not pos then return "NO_EXISTE", "el modelo " .. e.model .. " no esta en tu juego" end
+
+    local veh, state, detail = create_vehicle(e.model, pos, 0.0, function(handle)
+        ENTITY.FREEZE_ENTITY_POSITION(handle, true)
+        ENTITY.SET_ENTITY_COLLISION(handle, false, false)
+        apply_saved(handle, e.j)
+    end)
+    if not veh then return state, detail end
+
+    script.yield() -- un frame para que el juego procese el vehiculo
+    local okc, alive, missing = pcall(function()
+        local handle = veh:get_handle()
+        if not ENTITY.DOES_ENTITY_EXIST(handle) then return false end
+        return true, test_missing_mods(handle, e.j)
+    end)
+    pcall(function() veh:delete() end)
+
+    if not okc then return "PARCIAL", "error al comprobar: " .. tostring(alive) end
+    if not alive then return "NO_SPAWN", "el vehiculo desaparecio al crearse" end
+    if state then return state, detail end
+    if #missing > 0 then return "PARCIAL", "mejoras que no aplican: " .. table.concat(missing, ", ") end
+    return "OK", ""
+end
+
+-- Copia los que funcionan a garaje_ok\ con las mismas carpetas (espera frames)
+local function test_copy_ok(entries, done)
+    try(function()
+        for _, p in ipairs(FileMgr.FindFiles(TEST_OK_DIR, ".json", true)) do FileMgr.DeleteFile(p) end
+    end)
+    for i, e in ipairs(entries) do
+        local r = done[e.rel]
+        if r and not TEST_FAILS[r.state] then
+            try(function()
+                local dest = TEST_OK_DIR .. "/" .. e.rel .. ".json"
+                FileMgr.CreateDir(dest:match("^(.*)/[^/]*$"))
+                FileMgr.WriteFileContent(dest, FileMgr.ReadFileContent(e.path))
+            end)
+        end
+        if i % 50 == 0 then script.yield() end
+    end
+end
+
+-- Escribe resumen_prueba.txt y devuelve cuantos funcionan y cuantos no
+local function test_summary(entries, done)
+    local counts, fails, partial = {}, {}, {}
+    for _, e in ipairs(entries) do
+        local r = done[e.rel]
+        if r then
+            counts[r.state] = (counts[r.state] or 0) + 1
+            if TEST_FAILS[r.state] then
+                fails[#fails + 1] = r.state .. " | " .. e.rel .. " | " .. r.detail
+            elseif r.state == "PARCIAL" then
+                partial[#partial + 1] = e.rel .. " | " .. r.detail
+            end
+        end
+    end
+    local works = (counts.OK or 0) + (counts.PARCIAL or 0)
+    local lines = {
+        "Prueba del garaje en YimMenuV2",
+        "Vehiculos: " .. #entries,
+        "Funcionan: " .. works .. " (OK " .. (counts.OK or 0) .. ", PARCIAL " .. (counts.PARCIAL or 0)
+            .. "), copiados a scripts\\vehicle_presets\\garaje_ok\\",
+        "No funcionan: " .. #fails,
+        "",
+    }
+    for _, h in ipairs(TEST_HELP) do lines[#lines + 1] = h end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "== No funcionan =="
+    for _, l in ipairs(fails) do lines[#lines + 1] = l end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "== Funcionan, pero alguna mejora no se aplica =="
+    for _, l in ipairs(partial) do lines[#lines + 1] = l end
+    pcall(FileMgr.WriteFileContent, TEST_SUMMARY, table.concat(lines, "\n") .. "\n")
+    return works, #fails
+end
+
+-- Recorre todo el garaje (espera frames: se llama desde el bucle de fondo)
+local function run_test()
+    test.running, test.stop = true, false
+    pcall(FileMgr.WriteFileContent, TEST_FLAG, "La prueba del garaje se retoma sola mientras exista este archivo.\n")
+    local stopped = not test_wait_ready()
+    if not stopped then
+        test.status = "Leyendo el garaje"
+        local entries = test_collect()
+        local done, tries = test_read_log()
+        for i, e in ipairs(entries) do
+            if not done[e.rel] then
+                if (tries[e.rel] or 0) >= 2 then
+                    done[e.rel] = { state = "CRASH", detail = "el juego se cerro dos veces probando este vehiculo" }
+                    test_write("CRASH", e.rel, done[e.rel].detail)
+                elseif test.stop or not test_wait_ready() then
+                    stopped = true
+                    break
+                else
+                    test.status = string.format("Probando %d/%d: %s", i, #entries, e.rel)
+                    test_write("PROBANDO", e.rel)
+                    local state, detail = test_one(e)
+                    done[e.rel] = { state = state, detail = detail or "" }
+                    test_write(state, e.rel, detail)
+                    script.yield()
+                end
+            end
+        end
+        if not stopped then
+            test.status = "Copiando los que funcionan a garaje_ok"
+            test_copy_ok(entries, done)
+            local works, fails = test_summary(entries, done)
+            test.status = string.format("Terminada: %d funcionan, %d no (ver resumen_prueba.txt)", works, fails)
+            notify_ok(test.status)
+        end
+    end
+    if stopped then test.status = "Detenida; 'Probar todo el garaje' sigue donde iba" end
+    pcall(FileMgr.DeleteFile, TEST_FLAG)
+    test.running, test.requested = false, false
+end
+
+-- Bucle de fondo: lanza la prueba al pulsar el boton o si existe probar_garaje.flag
+script.run_in_callback(function()
+    while true do
+        local ok, flag = pcall(FileMgr.DoesFileExist, TEST_FLAG)
+        if test.requested or (ok and flag) then run_test() end
+        script.yield(2000)
+    end
+end)
+
 ---------------------------------------------------------------- interfaz
 
 local sub = menu.get_submenu(TITLE)
@@ -546,3 +823,24 @@ garage_group:imgui(function()
 end)
 garage_group:add_button("vehpresets_garage_spawn", "Spawnear del garaje", "Spawnea el vehiculo elegido con todas sus mejoras", action_garage_spawn)
 garage_group:add_button("vehpresets_garage_refresh", "Actualizar garaje", "Vuelve a leer la carpeta vehicle_presets\\garaje", function() try(refresh_garage) end)
+
+local test_group = garage_cat:add_group("Prueba automatica")
+test_group:imgui(function()
+    ImGui.Text("Estado: " .. test.status)
+    ImGui.Text("Resultado en scripts\\vehicle_presets\\resumen_prueba.txt")
+end)
+test_group:add_button("vehpresets_test_start", "Probar todo el garaje", "Spawnea y borra cada vehiculo del garaje (solo en modo historia)", function()
+    if test.running then notify_error("La prueba ya esta en marcha") return end
+    test.requested, test.status = true, "Empezando..."
+end)
+test_group:add_button("vehpresets_test_stop", "Detener prueba", "Para al terminar el vehiculo actual", function()
+    if test.running then test.stop, test.status = true, "Deteniendo..." end
+end)
+test_group:add_button("vehpresets_test_reset", "Borrar resultados", "La proxima prueba empieza desde el principio", function()
+    if test.running then notify_error("Deten la prueba primero") return end
+    try(function()
+        FileMgr.DeleteFile(TEST_LOG)
+        FileMgr.DeleteFile(TEST_SUMMARY)
+    end)
+    test.status = "Resultados borrados"
+end)

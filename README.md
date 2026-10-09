@@ -63,6 +63,37 @@ existe en tu version del juego, el script avisa con "Modelo invalido" y no hace 
 Para convertir otro pack (formatos YimMenu legacy y Cherax), usa `tools/convert_modpack.py`;
 las instrucciones estan al inicio del archivo.
 
+### Probar todo el garaje
+
+**Garaje > Prueba automatica > Probar todo el garaje** crea cada vehiculo del garaje como lo hace
+**Spawnear del garaje**, comprueba que aparece y que tiene sus mejoras, y lo borra. Solo funciona en
+modo historia: si estas en linea, espera. El vehiculo aparece 40 m delante, congelado y sin colision,
+asi que no te golpea. **Detener prueba** para al terminar el vehiculo actual; al volver a pulsar
+**Probar todo el garaje** sigue donde iba. **Borrar resultados** hace que la proxima prueba empiece
+de cero.
+
+Resultados, en `scripts\vehicle_presets\`:
+- `prueba_garaje.txt`: una linea por vehiculo, `ESTADO|carpeta/nombre|detalle`.
+- `resumen_prueba.txt`: cuantos funcionan y la lista de los que no.
+- `garaje_ok\`: copia de los que funcionan, con las mismas carpetas.
+
+| Estado | Significa |
+| --- | --- |
+| `OK` | Spawnea con todas sus mejoras |
+| `PARCIAL` | Spawnea, pero alguna mejora no se aplica en ese modelo (cuenta como que funciona) |
+| `NO_EXISTE` | El modelo no esta en tu juego |
+| `NO_CARGA` | El modelo no cargo en 10 segundos |
+| `NO_SPAWN` | El juego no creo el vehiculo |
+| `CRASH` | El juego se cerro dos veces probando ese vehiculo |
+| `ROTO` | El `.json` no se puede leer |
+
+Si el juego se cierra a mitad de la prueba, el archivo `probar_garaje.flag` sigue ahi y la prueba se
+retoma sola la proxima vez que se cargue el script. Para lanzarla sin abrir el menu, crea ese
+archivo vacio en `scripts\vehicle_presets\`.
+
+Ahora el script espera hasta 10 segundos a que cargue el modelo antes de crear el vehiculo (antes eran
+unos 30 frames), asi que los modelos pesados ya no fallan al spawnear con el disco ocupado.
+
 ## Formato del preset
 
 ```json
