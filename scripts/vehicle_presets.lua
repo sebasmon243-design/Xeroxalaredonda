@@ -213,9 +213,15 @@ end
 -- Carga el modelo, crea el vehiculo en `pos` y le aplica `apply_fn(handle)` (espera frames: fuera de pcall).
 -- Devuelve el Vehicle (nil si no se creo) y, si algo fallo, el tipo de fallo y su detalle.
 local function create_vehicle(model, pos, heading, apply_fn)
-    if not load_model(model, 10000) then return nil, "NO_CARGA", "el modelo no cargo en 10 s" end
+    if not load_model(model, 10000) then
+        pcall(STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED, model)
+        return nil, "NO_CARGA", "el modelo no cargo en 10 s"
+    end
     local veh = Vehicle.create(model, pos, heading)
-    if not veh or not veh:is_valid() then return nil, "NO_SPAWN", "el juego no creo el vehiculo" end
+    if not veh or not veh:is_valid() then
+        pcall(STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED, model)
+        return nil, "NO_SPAWN", "el juego no creo el vehiculo"
+    end
     local ok, err = pcall(apply_fn, veh:get_handle())
     if not ok then return veh, "PARCIAL", "error al aplicar mejoras: " .. tostring(err) end
     return veh
@@ -649,17 +655,32 @@ local function test_one(e)
     end)
     if not veh then return state, detail end
 
-    script.yield() -- un frame para que el juego procese el vehiculo
+    -- GET_VEHICLE_MOD solo dice que se pidio la pieza: esperar a que las piezas carguen y se
+    -- dibujen, para que un vehiculo que cierra el juego lo haga mientras es el que se prueba
+    local streamed, waited = false, 0
+    while waited < 5000 do
+        local okw, ready = pcall(function()
+            local handle = veh:get_handle()
+            return not ENTITY.DOES_ENTITY_EXIST(handle) or VEHICLE.HAVE_VEHICLE_MODS_STREAMED_IN(handle)
+        end)
+        if not okw or ready then streamed = okw and ready break end
+        script.yield(100)
+        waited = waited + 100
+    end
+    script.yield(500)
+
     local okc, alive, missing = pcall(function()
         local handle = veh:get_handle()
         if not ENTITY.DOES_ENTITY_EXIST(handle) then return false end
         return true, test_missing_mods(handle, e.j)
     end)
     pcall(function() veh:delete() end)
+    script.yield(250) -- el resultado se apunta cuando el juego ya borro el vehiculo
 
     if not okc then return "PARCIAL", "error al comprobar: " .. tostring(alive) end
     if not alive then return "NO_SPAWN", "el vehiculo desaparecio al crearse" end
     if state then return state, detail end
+    if not streamed then return "PARCIAL", "las piezas de las mejoras no cargaron en 5 s" end
     if #missing > 0 then return "PARCIAL", "mejoras que no aplican: " .. table.concat(missing, ", ") end
     return "OK", ""
 end

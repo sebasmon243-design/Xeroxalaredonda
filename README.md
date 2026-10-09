@@ -68,7 +68,8 @@ las instrucciones estan al inicio del archivo.
 **Garaje > Prueba automatica > Probar todo el garaje** crea cada vehiculo del garaje como lo hace
 **Spawnear del garaje**, comprueba que aparece y que tiene sus mejoras, y lo borra. Solo funciona en
 modo historia: si estas en linea, espera. El vehiculo aparece 40 m delante, congelado y sin colision,
-asi que no te golpea. **Detener prueba** para al terminar el vehiculo actual; al volver a pulsar
+asi que no te golpea. Cada vehiculo se queda en pantalla hasta que cargan sus piezas (alrededor de un
+segundo), asi que los 2.042 tardan entre 30 y 45 minutos. **Detener prueba** para al terminar el vehiculo actual; al volver a pulsar
 **Probar todo el garaje** sigue donde iba. **Borrar resultados** hace que la proxima prueba empiece
 de cero.
 
@@ -80,7 +81,7 @@ Resultados, en `scripts\vehicle_presets\`:
 | Estado | Significa |
 | --- | --- |
 | `OK` | Spawnea con todas sus mejoras |
-| `PARCIAL` | Spawnea, pero alguna mejora no se aplica en ese modelo (cuenta como que funciona) |
+| `PARCIAL` | Spawnea, pero alguna mejora no se aplica en ese modelo o sus piezas no cargaron en 5 s (cuenta como que funciona) |
 | `NO_EXISTE` | El modelo no esta en tu juego |
 | `NO_CARGA` | El modelo no cargo en 10 segundos |
 | `NO_SPAWN` | El juego no creo el vehiculo |
