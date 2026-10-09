@@ -26,23 +26,29 @@ local NUM_KEYS = { "r","g","b","r2","g2","b2","wheel_type","wheel_index",
                    "engine","brakes","transmission","suspension","armor","turbo" }
 
 local function save_preset(name)
-    local f = io.open(PRESET_DIR .. name .. ".preset", "w")
+    local f = io.open(PRESET_DIR .. name .. ".json", "w")
     if not f then return false end
-    f:write("model=" .. cfg.model .. "\n")
-    for _, k in ipairs(NUM_KEYS) do f:write(k .. "=" .. tostring(cfg[k]) .. "\n") end
+    local lines = { '  "model": "' .. cfg.model .. '"' }
+    for _, k in ipairs(NUM_KEYS) do
+        lines[#lines + 1] = '  "' .. k .. '": ' .. tostring(cfg[k])
+    end
+    f:write("{\n" .. table.concat(lines, ",\n") .. "\n}\n")
     f:close()
     return true
 end
 
 local function load_preset(name)
-    local f = io.open(PRESET_DIR .. name .. ".preset", "r")
+    local f = io.open(PRESET_DIR .. name .. ".json", "r")
     if not f then return false end
-    for line in f:lines() do
-        local k, v = line:match("^(%w+)=(.+)$")
-        if k == "model" then cfg.model = v
-        elseif k and cfg[k] ~= nil then cfg[k] = tonumber(v) or cfg[k] end
-    end
+    local text = f:read("*a")
     f:close()
+    -- JSON plano: "clave": "texto" o "clave": numero
+    for k, v in text:gmatch('"(%w+)"%s*:%s*"([^"]*)"') do
+        if k == "model" then cfg.model = v end
+    end
+    for k, v in text:gmatch('"(%w+)"%s*:%s*(-?%d+)') do
+        if cfg[k] ~= nil then cfg[k] = tonumber(v) end
+    end
     return true
 end
 

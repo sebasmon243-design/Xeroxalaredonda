@@ -1,0 +1,17 @@
+{
+  "model": "adder",
+  "r": 255,
+  "g": 0,
+  "b": 0,
+  "r2": 0,
+  "g2": 0,
+  "b2": 0,
+  "wheel_type": 7,
+  "wheel_index": 12,
+  "engine": 3,
+  "brakes": 2,
+  "transmission": 2,
+  "suspension": 3,
+  "armor": 4,
+  "turbo": 1
+}

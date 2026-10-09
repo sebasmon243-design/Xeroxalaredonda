@@ -1,0 +1,17 @@
+{
+  "model": "t20",
+  "r": 0,
+  "g": 70,
+  "b": 255,
+  "r2": 255,
+  "g2": 255,
+  "b2": 255,
+  "wheel_type": 7,
+  "wheel_index": 20,
+  "engine": 3,
+  "brakes": 2,
+  "transmission": 2,
+  "suspension": 3,
+  "armor": 4,
+  "turbo": 1
+}
