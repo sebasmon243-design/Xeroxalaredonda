@@ -1,17 +1,18 @@
-# Vehicle Presets (YimMenu, Lua)
+# Vehicle Presets (YimMenuV2, Lua)
 
-Script de YimMenu para spawnear un vehiculo por nombre, aplicarle pintura, rines y nivel de mejora,
-y guardar/cargar esa configuracion como un archivo `.json` por vehiculo.
+Script para **YimMenuV2** (GTA V Enhanced) que spawnea un vehiculo por nombre, le aplica pintura,
+rines y nivel de mejora, y guarda/carga esa configuracion como un archivo `.json` por vehiculo.
+
+> Es para YimMenuV2. El YimMenu clasico (legacy) usa otra API de Lua y este script no funciona ahi.
 
 ## Estructura
 
-Las carpetas del repo replican `%appdata%\YimMenu\`:
+La carpeta `scripts/` del repo replica `%appdata%\YimMenuV2\scripts\`:
 
 ```
 scripts/
-  vehicle_presets.lua              -> %appdata%\YimMenu\scripts\
-scripts_config/
-  vehicle_presets.lua/             -> %appdata%\YimMenu\scripts_config\
+  vehicle_presets.lua        -> %appdata%\YimMenuV2\scripts\vehicle_presets.lua
+  vehicle_presets/           -> %appdata%\YimMenuV2\scripts\vehicle_presets\
     adder_rojo.json
     zentorno_negro.json
     t20_azul.json
@@ -19,18 +20,17 @@ scripts_config/
     elegy_verde.json
 ```
 
-YimMenu solo deja que un script lea y escriba archivos dentro de
-`%appdata%\YimMenu\scripts_config\<nombre del script>\`; para este script esa carpeta se llama
-`vehicle_presets.lua` (con el `.lua`, asi la crea YimMenu). Ahi van los presets.
+YimMenuV2 solo deja que los scripts lean y escriban dentro de su carpeta `scripts`, por eso los
+presets van en `scripts\vehicle_presets\`. Si la carpeta no existe, el script la crea.
 
 ## Uso
 
-1. Copia `scripts\vehicle_presets.lua` a `%appdata%\YimMenu\scripts\`.
-2. Copia la carpeta `scripts_config\vehicle_presets.lua\` a `%appdata%\YimMenu\scripts_config\`.
-3. Recarga los scripts en YimMenu y abre la pestana **Vehicle Presets**.
-4. Escribe el nombre de un preset (ej. `adder_rojo`) y pulsa **Cargar preset**, luego **Spawnear**.
+1. Copia el contenido de `scripts\` del repo a `%appdata%\YimMenuV2\scripts\`.
+2. Recarga los scripts en YimMenuV2 y abre el menu **Vehicle Presets**.
+3. Elige un preset de la lista (o escribe su nombre) y pulsa **Cargar preset**, luego **Spawnear**.
 
-Botones: Spawnear, Aplicar al vehiculo actual, Leer vehiculo actual, Guardar preset, Cargar preset.
+Botones: Spawnear, Aplicar al vehiculo actual, Leer vehiculo actual, Guardar preset, Cargar preset,
+Actualizar lista. Todos los valores se pueden editar en el menu antes de spawnear o guardar.
 
 ## Formato del preset
 

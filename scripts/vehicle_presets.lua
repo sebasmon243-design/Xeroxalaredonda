@@ -1,15 +1,19 @@
--- Vehicle Presets para YimMenu (Lua)
+-- Vehicle Presets para YimMenuV2 (GTA V Enhanced)
 -- Spawnea un vehiculo por nombre, aplica pintura/rines/mejoras y guarda/carga presets en .json.
 --
--- Instalacion:
---   scripts\vehicle_presets.lua            -> %appdata%\YimMenu\scripts\
---   scripts_config\vehicle_presets.lua\    -> %appdata%\YimMenu\scripts_config\
+-- Instalacion (todo dentro de %appdata%\YimMenuV2\scripts\):
+--   scripts\vehicle_presets.lua    -> %appdata%\YimMenuV2\scripts\vehicle_presets.lua
+--   scripts\vehicle_presets\*.json -> %appdata%\YimMenuV2\scripts\vehicle_presets\
 --
--- YimMenu restringe io.open a %appdata%\YimMenu\scripts_config\<nombre del script>\
--- (para este script: scripts_config\vehicle_presets.lua\), asi que los presets
--- se leen y guardan ahi, un archivo <nombre>.json por vehiculo.
+-- YimMenuV2 descarga el script ante cualquier error de Lua, asi que todo lo que puede
+-- fallar va dentro de pcall. Las funciones que esperan varios frames (Vehicle.create,
+-- script.yield) se llaman fuera de pcall, directamente en el callback del boton.
 
 local TITLE = "Vehicle Presets"
+
+if not natives.are_natives_loaded() then
+    natives.load_natives()
+end
 
 -- Ids de mod de vehiculo (SET_VEHICLE_MOD / GET_VEHICLE_MOD)
 local MOD_ENGINE, MOD_BRAKES, MOD_TRANSMISSION = 11, 12, 13
@@ -17,7 +21,7 @@ local MOD_SUSPENSION, MOD_ARMOR = 15, 16
 local MOD_FRONT_WHEELS, MOD_REAR_WHEELS = 23, 24
 local TOGGLE_TURBO = 18
 
--- Configuracion actual (lo que se spawnea, guarda y carga)
+-- Configuracion actual (lo que se ve en el menu, se spawnea, se guarda y se carga)
 local cfg = {
     model = "adder",
     r = 255, g = 0, b = 0,        -- color primario RGB
@@ -28,58 +32,97 @@ local cfg = {
     turbo = 1,                    -- 1 = con turbo, 0 = sin turbo
 }
 
--- Orden de los campos numericos al escribir el .json
-local NUM_KEYS = { "r", "g", "b", "r2", "g2", "b2", "wheel_type", "wheel_index",
-                   "engine", "brakes", "transmission", "suspension", "armor", "turbo" }
+-- Orden de los campos numericos en el .json y etiquetas del menu
+local NUM_FIELDS = {
+    { "r", "Primario R" }, { "g", "Primario G" }, { "b", "Primario B" },
+    { "r2", "Secundario R" }, { "g2", "Secundario G" }, { "b2", "Secundario B" },
+    { "wheel_type", "Tipo de rin" }, { "wheel_index", "Indice de rin" },
+    { "engine", "Motor" }, { "brakes", "Frenos" }, { "transmission", "Transmision" },
+    { "suspension", "Suspension" }, { "armor", "Blindaje" }, { "turbo", "Turbo (0/1)" },
+}
+
+local preset_name = ""
+local preset_list = {}
 
 ---------------------------------------------------------------- utilidades
 
-local function notify_error(msg) gui.show_error(TITLE, msg) end
-local function notify_ok(msg) gui.show_success(TITLE, msg) end
+local function notify_error(msg) notify.error(TITLE, msg) end
+local function notify_ok(msg) notify.success(TITLE, msg) end
 
--- Solo letras, numeros, "_" y "-": evita rutas raras fuera de la carpeta de config
-local function valid_name(name)
-    return type(name) == "string" and name:match("^[%w_%-]+$") ~= nil
+-- Ejecuta fn protegida: un error se muestra como aviso en vez de descargar el script.
+-- No usar con funciones que esperan frames (Vehicle.create, script.yield).
+local function try(fn, ...)
+    local ok, a, b = pcall(fn, ...)
+    if not ok then
+        pcall(log.warn, TITLE .. ": " .. tostring(a))
+        pcall(notify.error, TITLE, "Error: " .. tostring(a))
+        return false
+    end
+    return true, a, b
 end
 
 local function clamp(v, lo, hi)
+    v = math.floor(tonumber(v) or 0)
     if v < lo then return lo end
     if v > hi then return hi end
     return v
 end
 
--- Acepta un nombre de modelo ("adder") o un hash numerico ("3078201489")
-local function model_hash(model)
-    local n = tonumber(model)
-    if n then return math.floor(n) end
-    return joaat(model)
+-- Nombre de archivo seguro: letras, numeros, "_" y "-"
+local function valid_name(name)
+    return type(name) == "string" and name:match("^[%w_%-]+$") ~= nil
 end
 
----------------------------------------------------------------- guardado (.json)
+-- Nombre de modelo ("adder") o hash numerico ("-1216765807")
+local function valid_model(model)
+    return type(model) == "string" and model:match("^%-?[%w_]+$") ~= nil
+end
+
+-- Los natives de hash aceptan el nombre como texto o el hash como numero
+local function model_arg(model)
+    return tonumber(model) or model
+end
+
+---------------------------------------------------------------- archivos .json
+
+local PRESET_DIR = ""
+
+local function preset_path(name)
+    return PRESET_DIR .. "/" .. name .. ".json"
+end
+
+local function refresh_list()
+    local list = {}
+    for _, path in ipairs(FileMgr.FindFiles(PRESET_DIR, ".json")) do
+        local name = path:match("([^/\\]+)%.json$")
+        if name then list[#list + 1] = name end
+    end
+    table.sort(list)
+    preset_list = list
+end
+
+try(function()
+    PRESET_DIR = FileMgr.GetMenuRootPath() .. "/vehicle_presets"
+    FileMgr.CreateDir(PRESET_DIR)
+    refresh_list()
+end)
 
 local function save_preset(name)
-    local f = io.open(name .. ".json", "w")
-    if not f then return false end
     local lines = { '  "model": "' .. cfg.model .. '"' }
-    for _, k in ipairs(NUM_KEYS) do
-        lines[#lines + 1] = '  "' .. k .. '": ' .. string.format("%d", cfg[k])
+    for _, f in ipairs(NUM_FIELDS) do
+        lines[#lines + 1] = '  "' .. f[1] .. '": ' .. string.format("%d", math.floor(cfg[f[1]]))
     end
-    f:write("{\n" .. table.concat(lines, ",\n") .. "\n}\n")
-    f:close()
-    return true
+    return FileMgr.WriteFileContent(preset_path(name), "{\n" .. table.concat(lines, ",\n") .. "\n}\n")
 end
 
 -- Lee un JSON plano: "clave": "texto"  o  "clave": numero
 local function load_preset(name)
-    if not io.exists(name .. ".json") then return false end
-    local f = io.open(name .. ".json", "r")
-    if not f then return false end
-    local text = f:read("a") or ""
-    f:close()
+    if not FileMgr.DoesFileExist(preset_path(name)) then return false end
+    local text = FileMgr.ReadFileContent(preset_path(name)) or ""
 
     local model = text:match('"model"%s*:%s*"([^"]*)"')
-    if model and model ~= "" then cfg.model = model:lower() end
-    for k, v in text:gmatch('"([%w_]+)"%s*:%s*(-?%d+)') do
+    if model and valid_model(model) then cfg.model = model:lower() end
+    for k, v in text:gmatch('"([%w_]+)"%s*:%s*(%-?%d+)') do
         if k ~= "model" and cfg[k] ~= nil then cfg[k] = math.floor(tonumber(v)) end
     end
     return true
@@ -98,7 +141,7 @@ local function apply_mods(veh)
     VEHICLE.SET_VEHICLE_CUSTOM_PRIMARY_COLOUR(veh, clamp(cfg.r, 0, 255), clamp(cfg.g, 0, 255), clamp(cfg.b, 0, 255))
     VEHICLE.SET_VEHICLE_CUSTOM_SECONDARY_COLOUR(veh, clamp(cfg.r2, 0, 255), clamp(cfg.g2, 0, 255), clamp(cfg.b2, 0, 255))
 
-    VEHICLE.SET_VEHICLE_WHEEL_TYPE(veh, cfg.wheel_type)
+    VEHICLE.SET_VEHICLE_WHEEL_TYPE(veh, clamp(cfg.wheel_type, 0, 12))
     set_mod_level(veh, MOD_FRONT_WHEELS, cfg.wheel_index)
     set_mod_level(veh, MOD_REAR_WHEELS, cfg.wheel_index) -- motos
 
@@ -114,54 +157,25 @@ local function current_vehicle()
     return PED.GET_VEHICLE_PED_IS_IN(PLAYER.PLAYER_PED_ID(), false)
 end
 
-local function spawn_vehicle(script)
-    local hash = model_hash(cfg.model)
-    if not STREAMING.IS_MODEL_IN_CDIMAGE(hash) or not STREAMING.IS_MODEL_A_VEHICLE(hash) then
-        notify_error("Modelo invalido: " .. cfg.model)
-        return
-    end
-
-    STREAMING.REQUEST_MODEL(hash)
-    local waited = 0
-    while not STREAMING.HAS_MODEL_LOADED(hash) do
-        if waited >= 5000 then
-            notify_error("El modelo tardo demasiado en cargar: " .. cfg.model)
-            return
-        end
-        script:sleep(100)
-        waited = waited + 100
-    end
-
-    local ped = PLAYER.PLAYER_PED_ID()
-    local pos = ENTITY.GET_ENTITY_COORDS(ped, true)
-    local heading = ENTITY.GET_ENTITY_HEADING(ped)
-    local veh = VEHICLE.CREATE_VEHICLE(hash, pos.x, pos.y, pos.z, heading, true, false, false)
-    STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(hash)
-    if veh == 0 then
-        notify_error("No se pudo crear el vehiculo")
-        return
-    end
-
-    apply_mods(veh)
-    PED.SET_PED_INTO_VEHICLE(ped, veh, -1)
-    notify_ok("Spawneado: " .. cfg.model)
+-- Lee un int que el native escribe en un puntero
+local function read_rgb(getter, veh)
+    local pr, pg, pb = memory.allocate(8), memory.allocate(8), memory.allocate(8)
+    local ok, err = pcall(getter, veh, pr, pg, pb)
+    local r, g, b = pr:get_int(), pg:get_int(), pb:get_int()
+    memory.free(pr); memory.free(pg); memory.free(pb)
+    if not ok then error(err, 0) end
+    return r, g, b
 end
 
 -- Copia la configuracion del vehiculo en el que estas a cfg
-local function capture_current()
-    local veh = current_vehicle()
-    if veh == 0 then
-        notify_error("No estas en un vehiculo")
-        return false
-    end
-
+local function capture(veh)
     local hash = ENTITY.GET_ENTITY_MODEL(veh)
     local name = (VEHICLE.GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(hash) or ""):lower()
     -- El nombre visible no siempre coincide con el modelo; si no coincide guardamos el hash
-    if name ~= "" and joaat(name) == hash then cfg.model = name else cfg.model = tostring(hash) end
+    if valid_model(name) and util.joaat(name) == hash then cfg.model = name else cfg.model = tostring(hash) end
 
-    cfg.r, cfg.g, cfg.b = VEHICLE.GET_VEHICLE_CUSTOM_PRIMARY_COLOUR(veh, 0, 0, 0)
-    cfg.r2, cfg.g2, cfg.b2 = VEHICLE.GET_VEHICLE_CUSTOM_SECONDARY_COLOUR(veh, 0, 0, 0)
+    cfg.r, cfg.g, cfg.b = read_rgb(VEHICLE.GET_VEHICLE_CUSTOM_PRIMARY_COLOUR, veh)
+    cfg.r2, cfg.g2, cfg.b2 = read_rgb(VEHICLE.GET_VEHICLE_CUSTOM_SECONDARY_COLOUR, veh)
     cfg.wheel_type = VEHICLE.GET_VEHICLE_WHEEL_TYPE(veh)
     cfg.wheel_index = VEHICLE.GET_VEHICLE_MOD(veh, MOD_FRONT_WHEELS)
     cfg.engine = VEHICLE.GET_VEHICLE_MOD(veh, MOD_ENGINE)
@@ -170,97 +184,111 @@ local function capture_current()
     cfg.suspension = VEHICLE.GET_VEHICLE_MOD(veh, MOD_SUSPENSION)
     cfg.armor = VEHICLE.GET_VEHICLE_MOD(veh, MOD_ARMOR)
     cfg.turbo = VEHICLE.IS_TOGGLE_MOD_ON(veh, TOGGLE_TURBO) and 1 or 0
-    return true
+end
+
+---------------------------------------------------------------- acciones (botones)
+
+local function action_spawn()
+    local ok, pos, heading = try(function()
+        local m = valid_model(cfg.model) and model_arg(cfg.model)
+        if not m or not STREAMING.IS_MODEL_IN_CDIMAGE(m) or not STREAMING.IS_MODEL_A_VEHICLE(m) then
+            notify_error("Modelo invalido: " .. tostring(cfg.model))
+            return nil
+        end
+        local ped = PLAYER.PLAYER_PED_ID()
+        -- 6 m delante del jugador para no aparecer dentro de otro vehiculo
+        return ENTITY.GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS(ped, 0.0, 6.0, 0.0), ENTITY.GET_ENTITY_HEADING(ped)
+    end)
+    if not ok or not pos then return end
+
+    -- Vehicle.create carga el modelo y crea un vehiculo de red (espera frames: fuera de pcall)
+    local veh = Vehicle.create(model_arg(cfg.model), pos, heading)
+    if not veh or not veh:is_valid() then
+        notify_error("No se pudo crear el vehiculo: " .. cfg.model)
+        return
+    end
+
+    if try(function()
+        local handle = veh:get_handle()
+        apply_mods(handle)
+        PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), handle, -1)
+    end) then
+        notify_ok("Spawneado: " .. cfg.model)
+    end
+end
+
+local function action_apply()
+    local handle = 0
+    if not try(function() handle = current_vehicle() end) then return end
+    if handle == 0 then notify_error("No estas en un vehiculo") return end
+
+    -- Pedir control de red si el vehiculo no es nuestro (espera frames: fuera de pcall)
+    local veh = Vehicle.new(handle)
+    if not veh:has_control() then veh:request_control() end
+
+    if try(apply_mods, handle) then notify_ok("Mods aplicados") end
+end
+
+local function action_capture()
+    try(function()
+        local handle = current_vehicle()
+        if handle == 0 then notify_error("No estas en un vehiculo") return end
+        capture(handle)
+        notify_ok("Configuracion leida: " .. cfg.model)
+    end)
+end
+
+local function action_save()
+    try(function()
+        if not valid_name(preset_name) then notify_error("Nombre invalido (usa letras, numeros, _ o -)") return end
+        if not valid_model(cfg.model) then notify_error("Modelo invalido: " .. tostring(cfg.model)) return end
+        if save_preset(preset_name) then
+            refresh_list()
+            notify_ok("Guardado: " .. preset_name .. ".json")
+        else
+            notify_error("No se pudo guardar " .. preset_name .. ".json")
+        end
+    end)
+end
+
+local function action_load()
+    try(function()
+        if not valid_name(preset_name) then notify_error("Escribe o elige el nombre de un preset") return end
+        if load_preset(preset_name) then
+            notify_ok("Cargado: " .. preset_name .. ".json")
+        else
+            notify_error("No existe: " .. preset_name .. ".json")
+        end
+    end)
 end
 
 ---------------------------------------------------------------- interfaz
 
-local tab = gui.add_tab(TITLE)
+local sub = menu.get_submenu(TITLE)
+local cat = sub:add_category("Presets")
 
-tab:add_text("Presets en: scripts_config\\vehicle_presets.lua\\<nombre>.json")
-local model_in = tab:add_input_string("Modelo (ej: adder, zentorno)")
-local name_in = tab:add_input_string("Nombre del preset")
-
-local ints = {}
-local function int_field(label, key)
-    ints[key] = tab:add_input_int(label)
-end
-tab:add_separator()
-tab:add_text("Pintura primaria (0-255)")
-int_field("Primario R", "r"); int_field("Primario G", "g"); int_field("Primario B", "b")
-tab:add_text("Pintura secundaria (0-255)")
-int_field("Secundario R", "r2"); int_field("Secundario G", "g2"); int_field("Secundario B", "b2")
-tab:add_text("Rines (tipo 0-12, indice -1 = de serie)")
-int_field("Tipo de rin", "wheel_type"); int_field("Indice de rin", "wheel_index")
-tab:add_text("Mejoras (-1 = de serie; se limitan al maximo del vehiculo)")
-int_field("Motor", "engine"); int_field("Frenos", "brakes")
-int_field("Transmision", "transmission"); int_field("Suspension", "suspension")
-int_field("Blindaje", "armor"); int_field("Turbo (0/1)", "turbo")
-
-local function ui_to_cfg()
-    local m = model_in:get_value()
-    if m and m ~= "" then cfg.model = m:lower() end
-    for k, field in pairs(ints) do cfg[k] = math.floor(tonumber(field:get_value()) or cfg[k]) end
-end
-
-local function cfg_to_ui()
-    model_in:set_value(cfg.model)
-    for k, field in pairs(ints) do field:set_value(cfg[k]) end
-end
-
-cfg_to_ui()
-
--- Ejecuta fn sin que un error descargue el script (YimMenu lo descarga ante cualquier error)
-local function safe(fn)
-    return function(...)
-        local ok, err = pcall(fn, ...)
-        if not ok then
-            log.warning(tostring(err))
-            notify_error("Error: " .. tostring(err))
-        end
+local config_group = cat:add_group("Vehiculo")
+-- Se dibuja cada frame: solo ImGui, sin natives ni esperas
+config_group:imgui(function()
+    cfg.model = ImGui.InputText("Modelo", cfg.model)
+    for _, f in ipairs(NUM_FIELDS) do
+        cfg[f[1]] = ImGui.InputInt(f[2], cfg[f[1]])
     end
-end
+end)
 
-tab:add_separator()
-tab:add_button("Spawnear", safe(function()
-    ui_to_cfg()
-    script.run_in_fiber(safe(spawn_vehicle))
-end))
-tab:add_sameline()
-tab:add_button("Aplicar al vehiculo actual", safe(function()
-    ui_to_cfg()
-    script.run_in_fiber(safe(function()
-        local veh = current_vehicle()
-        if veh == 0 then notify_error("No estas en un vehiculo") return end
-        apply_mods(veh)
-        notify_ok("Mods aplicados")
-    end))
-end))
-tab:add_sameline()
-tab:add_button("Leer vehiculo actual", safe(function()
-    script.run_in_fiber(safe(function()
-        if capture_current() then
-            cfg_to_ui()
-            notify_ok("Configuracion leida: " .. cfg.model)
-        end
-    end))
-end))
+local actions = cat:add_group("Acciones")
+actions:add_button("vehpresets_spawn", "Spawnear", "Spawnea el vehiculo con esta configuracion", action_spawn)
+actions:add_button("vehpresets_apply", "Aplicar al vehiculo actual", "Aplica pintura, rines y mejoras al vehiculo en el que estas", action_apply)
+actions:add_button("vehpresets_capture", "Leer vehiculo actual", "Copia la configuracion del vehiculo en el que estas", action_capture)
 
-tab:add_separator()
-tab:add_button("Guardar preset", safe(function()
-    ui_to_cfg()
-    local n = name_in:get_value()
-    if not valid_name(n) then notify_error("Nombre invalido (usa letras, numeros, _ o -)") return end
-    if save_preset(n) then notify_ok("Guardado: " .. n .. ".json") else notify_error("No se pudo guardar " .. n) end
-end))
-tab:add_sameline()
-tab:add_button("Cargar preset", safe(function()
-    local n = name_in:get_value()
-    if not valid_name(n) then notify_error("Nombre invalido (usa letras, numeros, _ o -)") return end
-    if load_preset(n) then
-        cfg_to_ui()
-        notify_ok("Cargado: " .. n .. ".json")
-    else
-        notify_error("No existe: " .. n .. ".json")
+local files = cat:add_group("Presets (.json)")
+files:imgui(function()
+    preset_name = ImGui.InputText("Nombre del preset", preset_name)
+    ImGui.Text("Guardados en scripts\\vehicle_presets\\")
+    for _, name in ipairs(preset_list) do
+        if ImGui.Selectable(name, name == preset_name) then preset_name = name end
     end
-end))
+end)
+files:add_button("vehpresets_save", "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
+files:add_button("vehpresets_load", "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
+files:add_button("vehpresets_refresh", "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
