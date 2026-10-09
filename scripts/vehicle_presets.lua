@@ -4,6 +4,7 @@
 -- Instalacion (todo dentro de %appdata%\YimMenuV2\scripts\):
 --   scripts\vehicle_presets.lua    -> %appdata%\YimMenuV2\scripts\vehicle_presets.lua
 --   scripts\vehicle_presets\*.json -> %appdata%\YimMenuV2\scripts\vehicle_presets\
+--   scripts\vehicle_presets\garaje\ -> %appdata%\YimMenuV2\scripts\vehicle_presets\garaje\ (vehiculos del modpack)
 --
 -- YimMenuV2 descarga el script ante cualquier error de Lua, asi que todo lo que puede
 -- fallar va dentro de pcall. Las funciones que esperan varios frames (Vehicle.create,
@@ -190,11 +191,12 @@ end
 
 ---------------------------------------------------------------- acciones (botones)
 
-local function action_spawn()
+-- Spawnea `model` delante del jugador, le aplica `apply_fn(handle)` y lo mete dentro.
+-- Se llama desde un boton (Vehicle.create espera frames).
+local function spawn_with(model, label, apply_fn)
     local ok, pos, heading = try(function()
-        local m = valid_model(cfg.model) and model_arg(cfg.model)
-        if not m or not STREAMING.IS_MODEL_IN_CDIMAGE(m) or not STREAMING.IS_MODEL_A_VEHICLE(m) then
-            notify_error("Modelo invalido: " .. tostring(cfg.model))
+        if not STREAMING.IS_MODEL_IN_CDIMAGE(model) or not STREAMING.IS_MODEL_A_VEHICLE(model) then
+            notify_error("Modelo invalido: " .. tostring(label))
             return nil
         end
         local ped = PLAYER.PLAYER_PED_ID()
@@ -204,19 +206,24 @@ local function action_spawn()
     if not ok or not pos then return end
 
     -- Vehicle.create carga el modelo y crea un vehiculo de red (espera frames: fuera de pcall)
-    local veh = Vehicle.create(model_arg(cfg.model), pos, heading)
+    local veh = Vehicle.create(model, pos, heading)
     if not veh or not veh:is_valid() then
-        notify_error("No se pudo crear el vehiculo: " .. cfg.model)
+        notify_error("No se pudo crear el vehiculo: " .. tostring(label))
         return
     end
 
     if try(function()
         local handle = veh:get_handle()
-        apply_mods(handle)
+        apply_fn(handle)
         PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), handle, -1)
     end) then
-        notify_ok("Spawneado: " .. cfg.model)
+        notify_ok("Spawneado: " .. tostring(label))
     end
+end
+
+local function action_spawn()
+    if not valid_model(cfg.model) then notify_error("Modelo invalido: " .. tostring(cfg.model)) return end
+    spawn_with(model_arg(cfg.model), cfg.model, apply_mods)
 end
 
 local function action_apply()
@@ -271,6 +278,216 @@ local function action_load()
     end)
 end
 
+---------------------------------------------------------------- garaje (vehiculos guardados)
+-- scripts\vehicle_presets\garaje\<carpeta>\<nombre>.json en el formato de vehiculo guardado de
+-- YimMenuV2 (el mismo que usa su menu "Saved Vehicles"). Solo se leen, nunca se escriben.
+
+-- Lector de JSON minimo: objetos, listas, textos, numeros, true/false/null
+local function json_decode(text)
+    local pos = 1
+    local value
+
+    local function fail(msg) error("JSON invalido (" .. msg .. ") en la posicion " .. pos, 0) end
+    local function skip() pos = text:find("[^ \t\r\n]", pos) or #text + 1 end
+
+    local function str()
+        local out = {}
+        pos = pos + 1
+        while true do
+            local c = text:sub(pos, pos)
+            if c == "" then fail("texto sin cerrar") end
+            if c == '"' then pos = pos + 1 return table.concat(out) end
+            if c == "\\" then
+                local e = text:sub(pos + 1, pos + 1)
+                local map = { b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+                if e == "u" then
+                    local code = tonumber(text:sub(pos + 2, pos + 5), 16) or 63
+                    out[#out + 1] = code < 128 and string.char(code) or "?"
+                    pos = pos + 6
+                else
+                    out[#out + 1] = map[e] or e
+                    pos = pos + 2
+                end
+            else
+                out[#out + 1] = c
+                pos = pos + 1
+            end
+        end
+    end
+
+    function value()
+        skip()
+        local c = text:sub(pos, pos)
+        if c == "{" then
+            local obj = {}
+            pos = pos + 1
+            skip()
+            if text:sub(pos, pos) == "}" then pos = pos + 1 return obj end
+            while true do
+                skip()
+                if text:sub(pos, pos) ~= '"' then fail("se esperaba una clave") end
+                local k = str()
+                skip()
+                if text:sub(pos, pos) ~= ":" then fail("se esperaba ':'") end
+                pos = pos + 1
+                obj[k] = value()
+                skip()
+                local d = text:sub(pos, pos)
+                pos = pos + 1
+                if d == "}" then return obj end
+                if d ~= "," then fail("se esperaba ',' o '}'") end
+            end
+        elseif c == "[" then
+            local arr = {}
+            pos = pos + 1
+            skip()
+            if text:sub(pos, pos) == "]" then pos = pos + 1 return arr end
+            while true do
+                arr[#arr + 1] = value()
+                skip()
+                local d = text:sub(pos, pos)
+                pos = pos + 1
+                if d == "]" then return arr end
+                if d ~= "," then fail("se esperaba ',' o ']'") end
+            end
+        elseif c == '"' then
+            return str()
+        elseif text:sub(pos, pos + 3) == "true" then pos = pos + 4 return true
+        elseif text:sub(pos, pos + 4) == "false" then pos = pos + 5 return false
+        elseif text:sub(pos, pos + 3) == "null" then pos = pos + 4 return nil
+        else
+            local num = text:match("^%-?%d+%.?%d*[eE]?[%+%-]?%d*", pos)
+            if not num or num == "" then fail("valor desconocido") end
+            pos = pos + #num
+            return tonumber(num) or fail("numero")
+        end
+    end
+
+    local result = value()
+    skip()
+    if pos <= #text then fail("texto de sobra") end
+    return result
+end
+
+-- Slots de mod en el orden de YimMenuV2 (indice = slot de SET_VEHICLE_MOD)
+local MOD_NAMES = {
+    [0] = "MOD_SPOILERS", "MOD_FRONTBUMPER", "MOD_REARBUMPER", "MOD_SIDESKIRT", "MOD_EXHAUST", "MOD_FRAME",
+    "MOD_GRILLE", "MOD_HOOD", "MOD_FENDER", "MOD_RIGHTFENDER", "MOD_ROOF", "MOD_ENGINE", "MOD_BRAKES",
+    "MOD_TRANSMISSION", "MOD_HORNS", "MOD_SUSPENSION", "MOD_ARMOR", "", "MOD_TURBO", "", "MOD_TIRESMOKE", "",
+    "MOD_XENONHEADLIGHTS", "MOD_FRONTWHEEL", "MOD_REARWHEEL", "MOD_PLATEHOLDER", "MOD_VANITYPLATES",
+    "MOD_TRIMDESIGN", "MOD_ORNAMENTS", "MOD_DASHBOARD", "MOD_DIALDESIGN", "MOD_DOORSPEAKERS", "MOD_SEATS",
+    "MOD_STEERINGWHEELS", "MOD_COLUMNSHIFTERLEVERS", "MOD_PLAQUES", "MOD_SPEAKERS", "MOD_TRUNK", "MOD_HYDRAULICS",
+    "MOD_ENGINEBLOCK", "MOD_AIRFILTER", "MOD_STRUTS", "MOD_ARCHCOVER", "MOD_AERIALS", "MOD_TRIM", "MOD_TANK",
+    "MOD_WINDOWS", "", "MOD_LIVERY",
+}
+local SLOT_TIRESMOKE, SLOT_XENON = 20, 22
+
+local function int(v) return type(v) == "number" and math.floor(v) or nil end
+local function rgb3(v)
+    if type(v) ~= "table" then return nil end
+    local r, g, b = int(v[1]), int(v[2]), int(v[3])
+    if r and g and b then return clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255) end
+end
+
+-- Igual que SavedVehicles::SpawnFromJson de YimMenuV2
+local function apply_saved(veh, j)
+    local model = j.vehicle_model_hash
+    VEHICLE.SET_VEHICLE_MOD_KIT(veh, 0)
+
+    if int(j.primary_color) and int(j.secondary_color) then
+        VEHICLE.SET_VEHICLE_COLOURS(veh, int(j.primary_color), int(j.secondary_color))
+    end
+    local r, g, b = rgb3(j.custom_primary_color)
+    if r then VEHICLE.SET_VEHICLE_CUSTOM_PRIMARY_COLOUR(veh, r, g, b) end
+    r, g, b = rgb3(j.custom_secondary_color)
+    if r then VEHICLE.SET_VEHICLE_CUSTOM_SECONDARY_COLOUR(veh, r, g, b) end
+
+    if int(j.vehicle_window_tint) then VEHICLE.SET_VEHICLE_WINDOW_TINT(veh, int(j.vehicle_window_tint)) end
+    if int(j.pearlescent_color) and int(j.wheel_color) then
+        VEHICLE.SET_VEHICLE_EXTRA_COLOURS(veh, int(j.pearlescent_color), int(j.wheel_color))
+    end
+    if j.tire_can_burst ~= nil then VEHICLE.SET_VEHICLE_TYRES_CAN_BURST(veh, j.tire_can_burst == 1 or j.tire_can_burst == true) end
+    if int(j.wheel_type) then VEHICLE.SET_VEHICLE_WHEEL_TYPE(veh, int(j.wheel_type)) end
+    if int(j.vehicle_livery) then VEHICLE.SET_VEHICLE_LIVERY(veh, int(j.vehicle_livery)) end
+
+    if VEHICLE.IS_THIS_MODEL_A_CAR(model) or VEHICLE.IS_THIS_MODEL_A_BIKE(model) then
+        r, g, b = rgb3(j.neon_color)
+        if r then VEHICLE.SET_VEHICLE_NEON_COLOUR(veh, r, g, b) end
+        if type(j.neon_lights) == "table" then
+            for i = 0, 3 do VEHICLE.SET_VEHICLE_NEON_ENABLED(veh, i, j.neon_lights[i + 1] == true) end
+        end
+        if type(j.plate_text) == "string" then VEHICLE.SET_VEHICLE_NUMBER_PLATE_TEXT(veh, j.plate_text:sub(1, 8)) end
+        if int(j.plate_text_index) then VEHICLE.SET_VEHICLE_NUMBER_PLATE_TEXT_INDEX(veh, int(j.plate_text_index)) end
+        if j.drift_tires ~= nil then VEHICLE.SET_DRIFT_TYRES(veh, j.drift_tires == 1 or j.drift_tires == true) end
+        if int(j.interior_color) then VEHICLE.SET_VEHICLE_EXTRA_COLOUR_5(veh, int(j.interior_color)) end
+        if int(j.dash_color) then VEHICLE.SET_VEHICLE_EXTRA_COLOUR_6(veh, int(j.dash_color)) end
+    end
+
+    for slot = 0, #MOD_NAMES do
+        local v = MOD_NAMES[slot] ~= "" and j[MOD_NAMES[slot]] or nil
+        if type(v) == "table" and int(v[1]) then
+            VEHICLE.SET_VEHICLE_MOD(veh, slot, int(v[1]), int(v[2]) == 1)
+        elseif v == "TOGGLE" then
+            if slot == SLOT_TIRESMOKE then
+                r, g, b = rgb3(j.tire_smoke_color)
+                if r then VEHICLE.SET_VEHICLE_TYRE_SMOKE_COLOR(veh, r, g, b) end
+            elseif slot == SLOT_XENON and int(j.headlight_color) then
+                VEHICLE.SET_VEHICLE_XENON_LIGHT_COLOR_INDEX(veh, int(j.headlight_color))
+            end
+            VEHICLE.TOGGLE_VEHICLE_MOD(veh, slot, true)
+        end
+    end
+
+    -- Lista de pares [extra, encendido]
+    if type(j.vehicle_extras) == "table" then
+        for _, e in ipairs(j.vehicle_extras) do
+            if type(e) == "table" and int(e[1]) then VEHICLE.SET_VEHICLE_EXTRA(veh, int(e[1]), e[2] ~= 1 and e[2] ~= true) end
+        end
+    end
+end
+
+local GARAGE_DIR = ""
+local garage = {}          -- carpeta -> lista de { name, lower, path }
+local garage_folders = {}  -- nombres de carpeta ordenados
+local garage_folder = ""
+local garage_filter = ""
+local garage_pick = nil    -- entrada elegida
+
+local function refresh_garage()
+    local by_folder, folders = {}, {}
+    for _, path in ipairs(FileMgr.FindFiles(GARAGE_DIR, ".json", true)) do
+        local folder, name = path:match("([^/\\]+)[/\\]([^/\\]+)%.json$")
+        if folder and name then
+            if folder == "garaje" then folder = "(sin carpeta)" end
+            if not by_folder[folder] then by_folder[folder] = {} folders[#folders + 1] = folder end
+            local list = by_folder[folder]
+            list[#list + 1] = { name = name, lower = name:lower(), path = path }
+        end
+    end
+    table.sort(folders, function(a, b) return a:lower() < b:lower() end)
+    for _, list in pairs(by_folder) do table.sort(list, function(a, b) return a.lower < b.lower end) end
+    garage, garage_folders, garage_pick = by_folder, folders, nil
+    if not garage[garage_folder] then garage_folder = folders[1] or "" end
+end
+
+try(function()
+    GARAGE_DIR = FileMgr.GetMenuRootPath() .. "/vehicle_presets/garaje"
+    FileMgr.CreateDir(GARAGE_DIR)
+    refresh_garage()
+end)
+
+local function action_garage_spawn()
+    local entry = garage_pick
+    if not entry then notify_error("Elige un vehiculo del garaje") return end
+    local ok, j = try(function()
+        local j = json_decode(FileMgr.ReadFileContent(entry.path))
+        if type(j) ~= "table" or not int(j.vehicle_model_hash) then error("falta vehicle_model_hash", 0) end
+        return j
+    end)
+    if not ok or not j then return end
+    spawn_with(int(j.vehicle_model_hash), entry.name, function(handle) apply_saved(handle, j) end)
+end
+
 ---------------------------------------------------------------- interfaz
 
 local sub = menu.get_submenu(TITLE)
@@ -301,3 +518,31 @@ end)
 files:add_button("vehpresets_save", "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
 files:add_button("vehpresets_load", "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
 files:add_button("vehpresets_refresh", "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
+
+local garage_cat = sub:add_category("Garaje")
+local garage_group = garage_cat:add_group("Vehiculos del modpack")
+-- Se dibuja cada frame: solo ImGui, sin natives ni esperas
+garage_group:imgui(function()
+    if ImGui.BeginCombo("Carpeta", garage_folder) then
+        for _, folder in ipairs(garage_folders) do
+            if ImGui.Selectable(folder .. " (" .. #garage[folder] .. ")", folder == garage_folder) and folder ~= garage_folder then
+                garage_folder, garage_pick = folder, nil
+            end
+        end
+        ImGui.EndCombo()
+    end
+    garage_filter = ImGui.InputText("Buscar", garage_filter)
+    ImGui.Text("Elegido: " .. (garage_pick and garage_pick.name or "-"))
+
+    local needle = garage_filter:lower()
+    if ImGui.BeginChild("vehpresets_garage_list", 0, 300, true) then
+        for _, entry in ipairs(garage[garage_folder] or {}) do
+            if needle == "" or entry.lower:find(needle, 1, true) then
+                if ImGui.Selectable(entry.name, entry == garage_pick) then garage_pick = entry end
+            end
+        end
+    end
+    ImGui.EndChild()
+end)
+garage_group:add_button("vehpresets_garage_spawn", "Spawnear del garaje", "Spawnea el vehiculo elegido con todas sus mejoras", action_garage_spawn)
+garage_group:add_button("vehpresets_garage_refresh", "Actualizar garaje", "Vuelve a leer la carpeta vehicle_presets\\garaje", function() try(refresh_garage) end)
