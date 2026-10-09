@@ -18,6 +18,7 @@ scripts/
     t20_azul.json
     sultanrs_blanco.json
     elegy_verde.json
+    garaje/                  -> vehiculos del modpack, una carpeta por grupo
 ```
 
 YimMenuV2 solo deja que los scripts lean y escriban dentro de su carpeta `scripts`, por eso los
@@ -34,6 +35,33 @@ Actualizar lista. Todos los valores se pueden editar en el menu antes de spawnea
 
 **Aplicar al vehiculo actual** primero pide el control de red del vehiculo; si no lo consigue (por ejemplo,
 el vehiculo es de otro jugador en GTA Online), avisa con un error y no cambia nada.
+
+## Garaje (vehiculos del modpack)
+
+La categoria **Garaje** del menu lista los 2.042 vehiculos del SUPERMODPACK-CARS que se pueden
+spawnear en YimMenuV2, con todas sus mejoras (piezas de carroceria, rines, colores de paleta y RGB,
+neones, polarizado, placa, humo de llantas, xenon y extras).
+
+1. Elige la carpeta en **Carpeta** (son las carpetas originales del modpack, por ejemplo `228 Veh` o `Drift`).
+2. Escribe en **Buscar** para filtrar por nombre y haz clic en un vehiculo.
+3. Pulsa **Spawnear del garaje**. Si agregas o borras archivos, pulsa **Actualizar garaje**.
+
+Los archivos estan en `scripts\vehicle_presets\garaje\<carpeta>\<nombre>.json` y usan el mismo formato
+que el menu "Saved Vehicles" de YimMenuV2, asi que tambien puedes copiar esas carpetas a
+`%appdata%\YimMenuV2\saved_json_vehicles\`.
+
+Que se quedo fuera del modpack:
+- Copias repetidas (4.076 archivos con el mismo vehiculo y la misma configuracion).
+- 101 archivos `.json` vacios o rotos, y 8 que no eran vehiculos.
+- Los objetos pegados al vehiculo (`vehicle_attachments` / `model_attachments` de YimMenu legacy):
+  YimMenuV2 no los soporta.
+- Los outfits, los .exe y las copias de YimMenu que venian en el paquete.
+
+Todos los modelos que quedaron estan en la lista de vehiculos de YimMenuV2. Si aun asi alguno no
+existe en tu version del juego, el script avisa con "Modelo invalido" y no hace nada.
+
+Para convertir otro pack (formatos YimMenu legacy y Cherax), usa `tools/convert_modpack.py`;
+las instrucciones estan al inicio del archivo.
 
 ## Formato del preset
 
