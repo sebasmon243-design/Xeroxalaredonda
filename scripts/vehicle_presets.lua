@@ -326,31 +326,48 @@ end
 local UID = "_" .. tostring(util.time())
 local function cmd(name) return "vehpresets_" .. name .. UID end
 
-local sub = menu.get_submenu(TITLE)
-local cat = sub:add_category("Presets")
+local function build_ui()
+    local sub = menu.get_submenu(TITLE)
+    local cat = sub:add_category("Presets")
 
-local config_group = cat:add_group("Vehiculo")
--- Se dibuja cada frame: solo ImGui, sin natives ni esperas
-config_group:imgui(function()
-    cfg.model = ImGui.InputText("Modelo", cfg.model)
-    for _, f in ipairs(NUM_FIELDS) do
-        cfg[f[1]] = ImGui.InputInt(f[2], cfg[f[1]])
-    end
-end)
+    local config_group = cat:add_group("Vehiculo")
+    -- Se dibuja cada frame: solo ImGui, sin natives ni esperas
+    config_group:imgui(function()
+        cfg.model = ImGui.InputText("Modelo", cfg.model)
+        for _, f in ipairs(NUM_FIELDS) do
+            cfg[f[1]] = ImGui.InputInt(f[2], cfg[f[1]])
+        end
+    end)
 
-local actions = cat:add_group("Acciones")
-actions:add_button(cmd("spawn"), "Spawnear", "Spawnea el vehiculo con esta configuracion", action_spawn)
-actions:add_button(cmd("apply"), "Aplicar al vehiculo actual", "Aplica pintura, rines y mejoras al vehiculo en el que estas", action_apply)
-actions:add_button(cmd("capture"), "Leer vehiculo actual", "Copia la configuracion del vehiculo en el que estas", action_capture)
+    local actions = cat:add_group("Acciones")
+    actions:add_button(cmd("spawn"), "Spawnear", "Spawnea el vehiculo con esta configuracion", action_spawn)
+    actions:add_button(cmd("apply"), "Aplicar al vehiculo actual", "Aplica pintura, rines y mejoras al vehiculo en el que estas", action_apply)
+    actions:add_button(cmd("capture"), "Leer vehiculo actual", "Copia la configuracion del vehiculo en el que estas", action_capture)
 
-local files = cat:add_group("Presets (.json)")
-files:imgui(function()
-    preset_name = ImGui.InputText("Nombre del preset", preset_name)
-    ImGui.Text("Guardados en scripts\\vehicle_presets\\")
-    for _, name in ipairs(preset_list) do
-        if ImGui.Selectable(name, name == preset_name) then preset_name = name end
-    end
-end)
-files:add_button(cmd("save"), "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
-files:add_button(cmd("load"), "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
-files:add_button(cmd("refresh"), "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
+    local files = cat:add_group("Presets (.json)")
+    files:imgui(function()
+        preset_name = ImGui.InputText("Nombre del preset", preset_name)
+        ImGui.Text("Guardados en scripts\\vehicle_presets\\")
+        for _, name in ipairs(preset_list) do
+            if ImGui.Selectable(name, name == preset_name) then preset_name = name end
+        end
+    end)
+    files:add_button(cmd("save"), "Guardar preset", "Guarda la configuracion como <nombre>.json", action_save)
+    files:add_button(cmd("load"), "Cargar preset", "Carga <nombre>.json en la configuracion", action_load)
+    files:add_button(cmd("refresh"), "Actualizar lista", "Vuelve a leer la carpeta vehicle_presets", function() try(refresh_list) end)
+end
+
+-- Al recargar, la instancia anterior del script puede seguir viva un momento. Si su submenu
+-- "Vehicle Presets" aun existe, colgarse de el haria que desaparezca al destruirse la
+-- instancia vieja, asi que se espera (max ~10 s) a que se vaya antes de crear el menu.
+if menu.find_submenu(TITLE) then
+    script.run_in_callback(function()
+        for _ = 1, 200 do
+            if not menu.find_submenu(TITLE) then break end
+            script.yield(50)
+        end
+        build_ui()
+    end)
+else
+    build_ui()
+end
